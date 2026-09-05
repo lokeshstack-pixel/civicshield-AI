@@ -196,6 +196,137 @@ def create_incident(incident: IncidentCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================
+# DASHBOARD SUMMARY API (Read-only aggregation for Authority Dashboard)
+# ============================================================
+
+OPEN_INCIDENT_STATUSES = {
+    "REPORTED",
+    "AI ANALYZED",
+    "PRIORITIZED",
+    "ASSIGNED",
+    "IN PROGRESS",
+    "REPAIR COMPLETED",
+}
+
+
+@app.get("/dashboard/summary")
+def get_dashboard_summary():
+    """
+    Read-only aggregation API for Member 4's Authority Dashboard.
+    Provides city/incident metrics, breakdown counters, and top priority dispatch queue.
+    """
+    try:
+        response = supabase.table("incidents").select("*").execute()
+        incidents = response.data or []
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve dashboard summary data"
+        )
+
+    if not incidents:
+        return {
+            "total_incidents": 0,
+            "open_incidents": 0,
+            "critical_incidents": 0,
+            "high_priority_incidents": 0,
+            "assigned_incidents": 0,
+            "in_progress_incidents": 0,
+            "repair_completed_incidents": 0,
+            "verified_incidents": 0,
+            "closed_incidents": 0,
+            "average_risk_score": 0.0,
+            "status_breakdown": {},
+            "department_breakdown": {},
+            "issue_type_breakdown": {},
+            "top_priority_incidents": [],
+        }
+
+    total_incidents = len(incidents)
+    open_incidents = sum(1 for inc in incidents if inc.get("status") in OPEN_INCIDENT_STATUSES)
+    critical_incidents = sum(1 for inc in incidents if (inc.get("risk_score") or 0) >= 75)
+    high_priority_incidents = sum(1 for inc in incidents if (inc.get("priority_score") or 0) >= 50)
+    assigned_incidents = sum(1 for inc in incidents if inc.get("status") == "ASSIGNED")
+    in_progress_incidents = sum(1 for inc in incidents if inc.get("status") == "IN PROGRESS")
+    repair_completed_incidents = sum(1 for inc in incidents if inc.get("status") == "REPAIR COMPLETED")
+    verified_incidents = sum(1 for inc in incidents if inc.get("status") == "VERIFIED")
+    closed_incidents = sum(1 for inc in incidents if inc.get("status") == "CLOSED")
+
+    valid_risks = [inc.get("risk_score") for inc in incidents if inc.get("risk_score") is not None]
+    average_risk_score = round(sum(valid_risks) / len(valid_risks), 2) if valid_risks else 0.0
+
+    # Status breakdown (all allowed statuses initialized to 0)
+    status_breakdown = {s: 0 for s in [
+        "REPORTED",
+        "AI ANALYZED",
+        "PRIORITIZED",
+        "ASSIGNED",
+        "IN PROGRESS",
+        "REPAIR COMPLETED",
+        "VERIFIED",
+        "CLOSED",
+    ]}
+    for inc in incidents:
+        st = inc.get("status")
+        if st:
+            status_breakdown[st] = status_breakdown.get(st, 0) + 1
+
+    # Department breakdown
+    department_breakdown = {}
+    for inc in incidents:
+        dept = inc.get("department")
+        dept_key = dept.strip() if dept and str(dept).strip() else "Unassigned"
+        department_breakdown[dept_key] = department_breakdown.get(dept_key, 0) + 1
+
+    # Issue type breakdown (standardized to title-case)
+    issue_type_breakdown = {}
+    for inc in incidents:
+        raw_issue = inc.get("issue_type")
+        if raw_issue and str(raw_issue).strip():
+            issue_key = str(raw_issue).strip().title()
+        else:
+            issue_key = "Unknown"
+        issue_type_breakdown[issue_key] = issue_type_breakdown.get(issue_key, 0) + 1
+
+    # Top priority incidents (up to 5 ordered by priority_score descending)
+    sorted_incidents = sorted(
+        incidents,
+        key=lambda inc: inc.get("priority_score") or 0,
+        reverse=True
+    )
+    top_priority_incidents = []
+    for inc in sorted_incidents[:5]:
+        top_priority_incidents.append({
+            "id": inc.get("id"),
+            "issue_type": inc.get("issue_type"),
+            "severity": inc.get("severity", 0),
+            "risk_score": inc.get("risk_score", 0),
+            "priority_score": inc.get("priority_score", 0),
+            "status": inc.get("status"),
+            "department": inc.get("department"),
+            "latitude": inc.get("latitude"),
+            "longitude": inc.get("longitude"),
+        })
+
+    return {
+        "total_incidents": total_incidents,
+        "open_incidents": open_incidents,
+        "critical_incidents": critical_incidents,
+        "high_priority_incidents": high_priority_incidents,
+        "assigned_incidents": assigned_incidents,
+        "in_progress_incidents": in_progress_incidents,
+        "repair_completed_incidents": repair_completed_incidents,
+        "verified_incidents": verified_incidents,
+        "closed_incidents": closed_incidents,
+        "average_risk_score": average_risk_score,
+        "status_breakdown": status_breakdown,
+        "department_breakdown": department_breakdown,
+        "issue_type_breakdown": issue_type_breakdown,
+        "top_priority_incidents": top_priority_incidents,
+    }
+
+
 @app.get("/incidents")
 def get_incidents(
     status: Optional[str] = None,
