@@ -1,0 +1,5 @@
+# CIVICSHIELD AI - Member 1 (AI + Risk Intelligence) Dependencies
+# Verified compatible with Python 3.14.3 on Windows
+pillow>=10.0.0
+numpy>=1.26.0
+pytest>=8.0.0
