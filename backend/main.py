@@ -84,6 +84,22 @@ class IncidentCreate(BaseModel):
     longitude: float
 
 
+class IncidentStatusUpdate(BaseModel):
+    status: str
+
+
+ALLOWED_STATUSES = {
+    "REPORTED",
+    "AI ANALYZED",
+    "PRIORITIZED",
+    "ASSIGNED",
+    "IN PROGRESS",
+    "REPAIR COMPLETED",
+    "VERIFIED",
+    "CLOSED",
+}
+
+
 # ============================================================
 # ROUTES
 # ============================================================
@@ -192,6 +208,49 @@ def get_incident(incident_id: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/incidents/{incident_id}/status")
+def update_incident_status(incident_id: int, update: IncidentStatusUpdate):
+    # 1. Validate status value
+    if update.status not in ALLOWED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status: '{update.status}'. Supported statuses: {', '.join(sorted(ALLOWED_STATUSES))}"
+        )
+
+    # 2. Verify that incident exists
+    try:
+        incident_check = (
+            supabase
+            .table("incidents")
+            .select("id")
+            .eq("id", incident_id)
+            .execute()
+        )
+        if not incident_check.data:
+            raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking incident: {str(e)}")
+
+    # 3. Update only the status field
+    try:
+        response = (
+            supabase
+            .table("incidents")
+            .update({"status": update.status})
+            .eq("id", incident_id)
+            .execute()
+        )
+        if not response.data:
+            raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+        return response.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update incident status: {str(e)}")
 
 
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
