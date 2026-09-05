@@ -1,13 +1,21 @@
+# Python
 __pycache__/
 *.pyc
 .venv/
+
+# Environment
 .env
+
+# Node
 node_modules/
+
+# Build / Model artifacts
 uploads/
 outputs/
 *.pt
 *.onnx
-.venv/
-__pycache__/
-*.pyc
-.env
+dist/
+
+# Backup / local files
+backend/main.py.backup
+backend/main.py.local
