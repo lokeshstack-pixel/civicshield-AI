@@ -1,11 +1,16 @@
 import asyncio
 from datetime import datetime
+from io import BytesIO
 import math
 import os
 import sys
 import tempfile
 import uuid
 from pathlib import Path
+
+import httpx
+import numpy as np
+from PIL import Image
 
 # Ensure the project root is on sys.path so "ai" package is importable
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -579,3 +584,156 @@ async def upload_incident_image(incident_id: int, file: UploadFile = File(...)):
         response["ai_warning"] = ai_error
 
     return response
+
+
+@app.post("/incidents/{incident_id}/verify-repair")
+async def verify_incident_repair(incident_id: int, file: UploadFile = File(...)):
+    # 1. Validate file type
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type: {file.content_type}. Allowed types: jpg, jpeg, png, webp"
+        )
+
+    # 2. Verify incident exists
+    try:
+        incident_check = (
+            supabase
+            .table("incidents")
+            .select("*")
+            .eq("id", incident_id)
+            .execute()
+        )
+        if not incident_check.data:
+            raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+        incident = incident_check.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking incident: {str(e)}")
+
+    # 3. Read uploaded file contents
+    file_bytes = await file.read()
+    file_ext = os.path.splitext(file.filename)[1] if file.filename else ".jpg"
+    unique_filename = f"{uuid.uuid4()}{file_ext}"
+    verification_storage_path = f"incidents/{incident_id}/verification/{unique_filename}"
+
+    # 4. Upload AFTER image to Supabase Storage under verification path
+    try:
+        supabase.storage.from_("incident-images").upload(
+            path=verification_storage_path,
+            file=file_bytes,
+            file_options={"content-type": file.content_type}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Storage upload failed: {str(e)}")
+
+    # 5. Generate public URL for the after-repair image
+    after_image_url = supabase.storage.from_("incident-images").get_public_url(verification_storage_path)
+
+    # 6. Verification logic
+    temp_path = None
+    verified = False
+    confidence = None
+    message = "After-repair image uploaded successfully, but automatic comparison could not be completed."
+    new_status = "REPAIR COMPLETED"
+
+    try:
+        # Save after-repair image temporarily
+        with tempfile.NamedTemporaryFile(
+            suffix=file_ext, delete=False, dir=tempfile.gettempdir()
+        ) as tmp:
+            tmp.write(file_bytes)
+            temp_path = tmp.name
+
+        original_image_url = incident.get("image_url")
+        original_img = None
+
+        if original_image_url:
+            try:
+                resp = httpx.get(original_image_url, timeout=5.0)
+                if resp.status_code == 200:
+                    original_img = Image.open(BytesIO(resp.content)).convert("RGB")
+            except Exception:
+                original_img = None
+
+        # If original image is available for comparison
+        if original_img is not None:
+            # Check structural/pixel similarity to catch duplicate identical uploads
+            is_identical = False
+            try:
+                after_img = Image.open(temp_path).convert("RGB")
+                orig_resized = original_img.resize((128, 128))
+                after_resized = after_img.resize((128, 128))
+                diff = float(np.mean(np.abs(np.array(orig_resized, dtype=np.float32) - np.array(after_resized, dtype=np.float32))))
+                if diff < 3.0:  # virtually identical image
+                    is_identical = True
+            except Exception:
+                pass
+
+            # Run hazard analysis on the after-repair image
+            ai_result = await asyncio.to_thread(
+                analyze_incident,
+                image_path=temp_path,
+                raise_errors=False,
+            )
+
+            after_severity = ai_result.get("severity", 0) if ai_result else 0
+            after_issue = ai_result.get("issue_type", "unknown") if ai_result else "unknown"
+
+            if is_identical:
+                verified = False
+                confidence = 0.95
+                message = "Uploaded image is identical to the original incident photo. Repair cannot be verified."
+                new_status = "REPAIR COMPLETED"
+            elif after_severity <= 3 or after_issue == "unknown":
+                verified = True
+                confidence = round(max(0.70, min(0.95, 1.0 - (after_severity / 15.0))), 2)
+                message = "Repair appears successful based on the available image comparison."
+                new_status = "VERIFIED"
+            else:
+                verified = False
+                confidence = round(max(0.30, min(0.60, 1.0 - (after_severity / 10.0))), 2)
+                message = f"Repair unverified: post-repair image still exhibits infrastructure defect ({after_issue}, severity {after_severity}/10)."
+                new_status = "REPAIR COMPLETED"
+        else:
+            verified = False
+            confidence = None
+            message = "After-repair image uploaded successfully, but automatic comparison could not be completed."
+            new_status = "REPAIR COMPLETED"
+
+    except Exception as exc:
+        verified = False
+        confidence = None
+        message = f"After-repair image uploaded successfully, but verification analysis encountered an error: {str(exc)}"
+        new_status = "REPAIR COMPLETED"
+
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+
+    # 7. Update status in Supabase (preserve original image_url)
+    try:
+        supabase.table("incidents").update(
+            {"status": new_status}
+        ).eq("id", incident_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update incident status: {str(e)}")
+
+    # 8. Return structured response
+    verification_data = {
+        "verified": verified,
+        "message": message,
+    }
+    if confidence is not None:
+        verification_data["confidence"] = confidence
+
+    return {
+        "incident_id": incident_id,
+        "verification": verification_data,
+        "after_image_url": after_image_url,
+        "status": new_status,
+    }
