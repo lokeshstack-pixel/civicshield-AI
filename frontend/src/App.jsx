@@ -1,33 +1,69 @@
-import { useEffect, useState } from "react";
-import axios from "axios";
+import React, { useState } from 'react';
+import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom';
+import Navbar from './components/Navbar.jsx';
+import Footer from './components/Footer.jsx';
+import ActionInfoModal from './components/ActionInfoModal.jsx';
+import ScrollToTop from './components/ScrollToTop.jsx';
+import LandingPage from './pages/LandingPage.jsx';
+import ReportPage from './pages/ReportPage.jsx';
+import './App.css';
 
-function App() {
-  const [backendStatus, setBackendStatus] = useState("Checking...");
+function AppContent() {
+  const [modalConfig, setModalConfig] = useState({ isOpen: false, type: 'report' });
+  const navigate = useNavigate();
 
-  useEffect(() => {
-    axios
-      .get("http://127.0.0.1:8000/health")
-      .then((response) => {
-        console.log("Backend response:", response.data);
-        setBackendStatus(response.data.status);
-      })
-      .catch((error) => {
-        console.error("Backend error:", error);
-        setBackendStatus("Backend Offline");
-      });
-  }, []);
+  const handleOpenActionModal = (type) => {
+    setModalConfig({ isOpen: true, type });
+  };
+
+  const handleCloseActionModal = () => {
+    setModalConfig({ isOpen: false, type: 'report' });
+  };
+
+  const handleReportClick = () => {
+    navigate('/report');
+  };
 
   return (
-    <div>
-      <h1>CIVICSHIELD AI</h1>
+    <div className="civicshield-app">
+      <ScrollToTop />
 
-      <p>Urban Infrastructure Risk Intelligence Platform</p>
+      {/* Navigation */}
+      <Navbar onOpenActionModal={handleOpenActionModal} />
 
-      <h2>Backend Status</h2>
+      {/* Page Routing */}
+      <main id="main-content">
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <LandingPage
+                onOpenActionModal={handleOpenActionModal}
+                onReportClick={handleReportClick}
+              />
+            }
+          />
+          <Route path="/report" element={<ReportPage />} />
+        </Routes>
+      </main>
 
-      <p>{backendStatus}</p>
+      {/* Footer */}
+      <Footer onOpenActionModal={handleOpenActionModal} />
+
+      {/* Action Notification Modal (for Track Complaint preview) */}
+      <ActionInfoModal
+        isOpen={modalConfig.isOpen}
+        type={modalConfig.type}
+        onClose={handleCloseActionModal}
+      />
     </div>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AppContent />
+    </BrowserRouter>
+  );
+}
