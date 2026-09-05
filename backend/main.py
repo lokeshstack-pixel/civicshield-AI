@@ -153,6 +153,47 @@ def create_incident(incident: IncidentCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/incidents")
+def get_incidents(
+    status: Optional[str] = None,
+    department: Optional[str] = None,
+    issue_type: Optional[str] = None,
+):
+    try:
+        query = supabase.table("incidents").select("*")
+        
+        if status:
+            query = query.eq("status", status)
+        if department:
+            query = query.eq("department", department)
+        if issue_type:
+            query = query.eq("issue_type", issue_type)
+            
+        response = query.order("created_at", desc=True).execute()
+        return response.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/incidents/{incident_id}")
+def get_incident(incident_id: int):
+    try:
+        response = (
+            supabase
+            .table("incidents")
+            .select("*")
+            .eq("id", incident_id)
+            .execute()
+        )
+        if not response.data:
+            raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+        return response.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 @app.post("/incidents/{incident_id}/image")
