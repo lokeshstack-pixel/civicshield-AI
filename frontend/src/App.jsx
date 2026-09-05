@@ -9,15 +9,15 @@ import ReportPage from './pages/ReportPage.jsx';
 import './App.css';
 
 function AppContent() {
-  const [modalConfig, setModalConfig] = useState({ isOpen: false, type: 'report' });
+  const [modalConfig, setModalConfig] = useState({ isOpen: false, type: 'report', incidentId: null });
   const navigate = useNavigate();
 
-  const handleOpenActionModal = (type) => {
-    setModalConfig({ isOpen: true, type });
+  const handleOpenActionModal = (type, incidentId = null) => {
+    setModalConfig({ isOpen: true, type, incidentId });
   };
 
   const handleCloseActionModal = () => {
-    setModalConfig({ isOpen: false, type: 'report' });
+    setModalConfig({ isOpen: false, type: 'report', incidentId: null });
   };
 
   const handleReportClick = () => {
@@ -43,17 +43,21 @@ function AppContent() {
               />
             }
           />
-          <Route path="/report" element={<ReportPage />} />
+          <Route
+            path="/report"
+            element={<ReportPage onOpenActionModal={handleOpenActionModal} />}
+          />
         </Routes>
       </main>
 
       {/* Footer */}
       <Footer onOpenActionModal={handleOpenActionModal} />
 
-      {/* Action Notification Modal (for Track Complaint preview) */}
+      {/* Action Notification / Tracker Modal */}
       <ActionInfoModal
         isOpen={modalConfig.isOpen}
         type={modalConfig.type}
+        incidentId={modalConfig.incidentId}
         onClose={handleCloseActionModal}
       />
     </div>

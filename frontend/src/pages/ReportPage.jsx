@@ -3,8 +3,9 @@ import { Link, useNavigate } from 'react-router-dom';
 import ImageUploader from '../components/ImageUploader.jsx';
 import LocationCapture from '../components/LocationCapture.jsx';
 import ReportSummary from '../components/ReportSummary.jsx';
+import { createIncident, uploadIncidentImage, getIncident } from '../services/api.js';
 
-export default function ReportPage() {
+export default function ReportPage({ onOpenActionModal }) {
   const navigate = useNavigate();
 
   // Form State
@@ -18,6 +19,9 @@ export default function ReportPage() {
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [submitStatusMessage, setSubmitStatusMessage] = useState('');
+  const [submitError, setSubmitError] = useState('');
+  const [submittedIncident, setSubmittedIncident] = useState(null);
 
   const MAX_DESC_LENGTH = 500;
 
@@ -82,13 +86,12 @@ export default function ReportPage() {
     return newErrors;
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     const validationErrors = validateForm();
     if (Object.keys(validationErrors).length > 0) {
       setErrors(validationErrors);
       // Scroll to the first error
-      const firstErrorKey = Object.keys(validationErrors)[0];
       const errorElement = document.querySelector('.field-error-message');
       if (errorElement) {
         errorElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -97,14 +100,70 @@ export default function ReportPage() {
     }
 
     setErrors({});
+    setSubmitError('');
     setIsSubmitting(true);
 
-    // Simulate frontend-only submission delay (no backend API calls)
-    setTimeout(() => {
-      setIsSubmitting(false);
+    try {
+      // Step 1: Create incident in FastAPI backend
+      setSubmitStatusMessage('Registering complaint in CIVICSHIELD database...');
+      const createdIncident = await createIncident({
+        issue_type: issueType ? issueType.toLowerCase() : null,
+        description: description.trim(),
+        latitude: location.latitude,
+        longitude: location.longitude,
+      });
+
+      let finalIncidentData = { ...createdIncident };
+
+      // Step 2: Upload photo and run AI triage if photo is attached
+      if (imageFile && createdIncident.id) {
+        setSubmitStatusMessage('Uploading photo & running AI damage triage...');
+        try {
+          const uploadRes = await uploadIncidentImage(createdIncident.id, imageFile);
+
+          // Attempt to retrieve the refreshed incident record with AI fields
+          try {
+            const refreshed = await getIncident(createdIncident.id);
+            finalIncidentData = {
+              ...refreshed,
+              ai_analysis: uploadRes?.ai_analysis,
+            };
+          } catch (_) {
+            finalIncidentData = {
+              ...createdIncident,
+              image_url: uploadRes?.image_url || null,
+              ...(uploadRes?.ai_analysis
+                ? {
+                    issue_type: uploadRes.ai_analysis.issue_type || createdIncident.issue_type,
+                    severity: uploadRes.ai_analysis.severity,
+                    risk_score: uploadRes.ai_analysis.risk_score,
+                    priority_score: uploadRes.ai_analysis.priority_score,
+                    department: uploadRes.ai_analysis.department,
+                  }
+                : {}),
+              ai_analysis: uploadRes?.ai_analysis,
+            };
+          }
+        } catch (imgErr) {
+          console.warn('Image upload / AI triage warning:', imgErr);
+          setSubmitError(
+            `Complaint #${createdIncident.id} was saved, but photo upload encountered an issue: ${imgErr.message}. The complaint is still registered.`
+          );
+        }
+      }
+
+      setSubmittedIncident(finalIncidentData);
       setIsSubmitted(true);
       window.scrollTo({ top: 0, behavior: 'smooth' });
-    }, 1200);
+    } catch (err) {
+      console.error('Submission error:', err);
+      setSubmitError(
+        err.message || 'Failed to submit complaint. Please ensure the backend is running and try again.'
+      );
+    } finally {
+      setIsSubmitting(false);
+      setSubmitStatusMessage('');
+    }
   };
 
   const handleReset = () => {
@@ -113,6 +172,9 @@ export default function ReportPage() {
     setDescription('');
     setLocation(null);
     setErrors({});
+    setSubmitError('');
+    setSubmitStatusMessage('');
+    setSubmittedIncident(null);
     setIsSubmitted(false);
   };
 
@@ -143,66 +205,158 @@ export default function ReportPage() {
                 <polyline points="22 4 12 14.01 9 11.01" />
               </svg>
             </div>
-            <span className="success-stage-tag">FRONTEND VERIFICATION COMPLETE</span>
-            <h1 className="success-title">Report ready for submission</h1>
+            <span className="success-stage-tag">
+              COMPLAINT REGISTERED · ID #{submittedIncident?.id || '—'}
+            </span>
+            <h1 className="success-title">Complaint Successfully Submitted</h1>
             <p className="success-subtitle">
-              Your complaint information has been collected successfully.
+              Your report has been received and processed by CIVICSHIELD AI. Reference ID #{submittedIncident?.id}.
             </p>
+
+            {submitError && (
+              <div className="form-validation-banner form-error-banner" style={{ marginBottom: 20 }}>
+                <div className="banner-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                  </svg>
+                </div>
+                <div>{submitError}</div>
+              </div>
+            )}
+
+            {/* AI Assessment Card (if AI triage returned scores) */}
+            {(submittedIncident?.priority_score > 0 || submittedIncident?.ai_analysis) && (
+              <div className="ai-assessment-card" style={{
+                width: '100%',
+                background: 'linear-gradient(135deg, #f0fdf4 0%, #e0f2fe 100%)',
+                border: '1px solid #93c5fd',
+                borderRadius: 'var(--radius-md)',
+                padding: '20px',
+                marginBottom: '20px',
+                textAlign: 'left'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 800, letterSpacing: '0.05em', color: '#1d4ed8' }}>
+                    CIVICSHIELD AI ASSESSMENT COMPLETE
+                  </span>
+                  <span style={{
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    padding: '2px 8px',
+                    borderRadius: 9999,
+                    backgroundColor: submittedIncident?.priority_score >= 70 ? '#fee2e2' : '#fef3c7',
+                    color: submittedIncident?.priority_score >= 70 ? '#991b1b' : '#92400e'
+                  }}>
+                    {submittedIncident?.ai_analysis?.priority_level || (submittedIncident?.priority_score >= 70 ? 'HIGH PRIORITY' : 'MODERATE PRIORITY')}
+                  </span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '12px', marginBottom: '12px' }}>
+                  <div style={{ background: '#fff', padding: '10px 12px', borderRadius: 8, border: '1px solid #bfdbfe' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 700 }}>SEVERITY</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#0f172a' }}>
+                      {submittedIncident?.severity ?? 0}<span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>/100</span>
+                    </div>
+                  </div>
+                  <div style={{ background: '#fff', padding: '10px 12px', borderRadius: 8, border: '1px solid #bfdbfe' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 700 }}>RISK SCORE</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#0f172a' }}>
+                      {submittedIncident?.risk_score ?? 0}<span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>/100</span>
+                    </div>
+                  </div>
+                  <div style={{ background: '#fff', padding: '10px 12px', borderRadius: 8, border: '1px solid #bfdbfe' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 700 }}>PRIORITY SCORE</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#2563eb' }}>
+                      {submittedIncident?.priority_score ?? 0}<span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>/100</span>
+                    </div>
+                  </div>
+                  <div style={{ background: '#fff', padding: '10px 12px', borderRadius: 8, border: '1px solid #bfdbfe' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 700 }}>DEPARTMENT</div>
+                    <div style={{ fontSize: '0.875rem', fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {submittedIncident?.department || 'Assigned automatically'}
+                    </div>
+                  </div>
+                </div>
+                {submittedIncident?.ai_analysis?.damage_description && (
+                  <p style={{ margin: 0, fontSize: '0.8125rem', color: '#334155', fontStyle: 'italic' }}>
+                    "{submittedIncident.ai_analysis.damage_description}"
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Collected Payload Summary */}
             <div className="collected-data-card">
-              <h3 className="collected-data-heading">Collected Complaint Data</h3>
+              <h3 className="collected-data-heading">Registered Complaint Details</h3>
               <div className="collected-grid">
+                <div className="collected-field">
+                  <span className="collected-label">Incident Reference:</span>
+                  <span className="collected-value">#{submittedIncident?.id || '—'}</span>
+                </div>
+
+                <div className="collected-field">
+                  <span className="collected-label">Current Status:</span>
+                  <span className="collected-value" style={{ color: '#0284c7', fontWeight: 700 }}>
+                    {submittedIncident?.status || 'REPORTED'}
+                  </span>
+                </div>
+
                 <div className="collected-field">
                   <span className="collected-label">Uploaded Photo:</span>
                   <div className="collected-photo-preview">
-                    {imagePreview && (
-                      <img src={imagePreview} alt="Submitted issue preview" className="collected-thumb" />
+                    {(submittedIncident?.image_url || imagePreview) && (
+                      <img
+                        src={submittedIncident?.image_url || imagePreview}
+                        alt="Submitted issue preview"
+                        className="collected-thumb"
+                      />
                     )}
-                    <span className="collected-value">{imageFile?.name}</span>
+                    <span className="collected-value">
+                      {imageFile?.name || 'Evidence photo attached'}
+                    </span>
                   </div>
                 </div>
 
                 <div className="collected-field">
-                  <span className="collected-label">Issue Type:</span>
-                  <span className="collected-value">{issueType || 'Not specified (AI will classify)'}</span>
+                  <span className="collected-label">Issue Classification:</span>
+                  <span className="collected-value">
+                    {submittedIncident?.issue_type || issueType || 'Other'}
+                  </span>
                 </div>
 
                 <div className="collected-field full-width">
                   <span className="collected-label">Description:</span>
-                  <p className="collected-desc-text">"{description}"</p>
+                  <p className="collected-desc-text">"{submittedIncident?.description || description}"</p>
                 </div>
 
                 <div className="collected-field full-width">
-                  <span className="collected-label">Geo Location:</span>
+                  <span className="collected-label">Geo Coordinates:</span>
                   <div className="collected-coords-tag">
-                    <span>Latitude: {location?.latitude}° N</span>
+                    <span>Latitude: {submittedIncident?.latitude ?? location?.latitude}° N</span>
                     <span className="coord-split">•</span>
-                    <span>Longitude: {location?.longitude}° E</span>
-                    <span className="coord-split">•</span>
-                    <span>Accuracy: ~{location?.accuracyMeters}m</span>
+                    <span>Longitude: {submittedIncident?.longitude ?? location?.longitude}° E</span>
+                    {location?.accuracyMeters && (
+                      <>
+                        <span className="coord-split">•</span>
+                        <span>Accuracy: ~{location.accuracyMeters}m</span>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="submission-roadmap-notice">
-              <div className="roadmap-notice-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="16" x2="12" y2="12" />
-                  <line x1="12" y1="8" x2="12.01" y2="8" />
-                </svg>
-              </div>
-              <p className="roadmap-notice-text">
-                <strong>Project Status:</strong> This step collects and validates the citizen reporting payload entirely on the client side. In the next development step, this payload will be connected to the FastAPI backend triage engine.
-              </p>
-            </div>
-
             <div className="success-actions-row">
-              <Link to="/" className="btn btn-primary btn-lg">
-                BACK TO HOME
-              </Link>
+              {onOpenActionModal && (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-lg"
+                  onClick={() => onOpenActionModal('track', submittedIncident?.id)}
+                >
+                  TRACK THIS COMPLAINT
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-outline btn-lg"
@@ -210,6 +364,9 @@ export default function ReportPage() {
               >
                 SUBMIT ANOTHER REPORT
               </button>
+              <Link to="/" className="btn btn-ghost btn-lg" style={{ border: '1px solid var(--border-subtle)' }}>
+                BACK TO HOME
+              </Link>
             </div>
           </div>
         ) : (
@@ -221,6 +378,23 @@ export default function ReportPage() {
                 Help your city identify and prioritize problems faster. Upload a photo, describe the issue, and share its location.
               </p>
             </header>
+
+            {/* API Error Banner if submission failed */}
+            {submitError && (
+              <div className="form-validation-banner form-error-banner" role="alert" style={{ marginBottom: 20 }}>
+                <div className="banner-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                  </svg>
+                </div>
+                <div>
+                  <strong>Submission Error:</strong>
+                  <p style={{ margin: '4px 0 0' }}>{submitError}</p>
+                </div>
+              </div>
+            )}
 
             {/* Validation Banner if submitted with errors */}
             {Object.keys(errors).length > 0 && (
