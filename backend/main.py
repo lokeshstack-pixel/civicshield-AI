@@ -24,6 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
 from dotenv import dotenv_values
 from ai.pipeline import analyze_incident
+from ai.risk import calculate_risk, get_risk_level
+from ai.priority import calculate_priority, get_priority_level
 
 
 # ============================================================
@@ -106,6 +108,11 @@ class IncidentStatusUpdate(BaseModel):
 
 class IncidentAssign(BaseModel):
     department: str
+
+
+class RiskRecalculateRequest(BaseModel):
+    weather_factor: Optional[float] = 1.0
+    traffic_factor: Optional[float] = 1.0
 
 
 ALLOWED_STATUSES = {
@@ -736,4 +743,90 @@ async def verify_incident_repair(incident_id: int, file: UploadFile = File(...))
         "verification": verification_data,
         "after_image_url": after_image_url,
         "status": new_status,
+    }
+
+
+@app.post("/incidents/{incident_id}/recalculate-risk")
+def recalculate_incident_risk(incident_id: int, request: RiskRecalculateRequest = RiskRecalculateRequest()):
+    weather_factor = request.weather_factor if request.weather_factor is not None else 1.0
+    traffic_factor = request.traffic_factor if request.traffic_factor is not None else 1.0
+
+    # 1. Validation: 0.5 <= factor <= 2.0
+    if not (0.5 <= weather_factor <= 2.0):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid weather_factor: {weather_factor}. Value must be between 0.5 and 2.0."
+        )
+
+    if not (0.5 <= traffic_factor <= 2.0):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid traffic_factor: {traffic_factor}. Value must be between 0.5 and 2.0."
+        )
+
+    # 2. Verify incident exists
+    try:
+        incident_check = (
+            supabase
+            .table("incidents")
+            .select("*")
+            .eq("id", incident_id)
+            .execute()
+        )
+        if not incident_check.data:
+            raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+        incident = incident_check.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking incident: {str(e)}")
+
+    # 3. Recalculate risk and priority
+    previous_risk_score = incident.get("risk_score", 0)
+    previous_priority_score = incident.get("priority_score", 0)
+    severity = incident.get("severity", 0)
+
+    # Determine baseline risk from damage severity using Member 1's risk engine,
+    # preventing runaway score inflation upon repeated recalculations.
+    if severity > 0:
+        base_risk = calculate_risk(severity=severity)["risk_score"]
+    else:
+        base_risk = previous_risk_score if previous_risk_score > 0 else 50
+
+    context_multiplier = weather_factor * traffic_factor
+    new_risk = max(0, min(100, int(round(base_risk * context_multiplier))))
+
+    # Recalculate priority using Member 1's priority engine
+    priority_res = calculate_priority(
+        risk_score=new_risk,
+        severity=severity,
+        issue_type=incident.get("issue_type")
+    )
+    new_priority = priority_res.get("priority_score", 0)
+    priority_level = priority_res.get("priority_level", get_priority_level(new_priority))
+    risk_level = get_risk_level(new_risk)
+
+    # 4. Update ONLY risk_score and priority_score in Supabase
+    try:
+        supabase.table("incidents").update({
+            "risk_score": new_risk,
+            "priority_score": new_priority
+        }).eq("id", incident_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update incident risk and priority: {str(e)}")
+
+    # 5. Return structured response
+    return {
+        "incident_id": incident_id,
+        "previous_risk_score": previous_risk_score,
+        "new_risk_score": new_risk,
+        "previous_priority_score": previous_priority_score,
+        "new_priority_score": new_priority,
+        "risk_level": risk_level,
+        "priority_level": priority_level,
+        "factors": {
+            "weather_factor": weather_factor,
+            "traffic_factor": traffic_factor,
+        },
+        "message": "Risk and priority recalculated using updated environmental factors.",
     }
