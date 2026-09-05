@@ -99,6 +99,10 @@ class IncidentStatusUpdate(BaseModel):
     status: str
 
 
+class IncidentAssign(BaseModel):
+    department: str
+
+
 ALLOWED_STATUSES = {
     "REPORTED",
     "AI ANALYZED",
@@ -262,6 +266,53 @@ def update_incident_status(incident_id: int, update: IncidentStatusUpdate):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update incident status: {str(e)}")
+
+
+@app.patch("/incidents/{incident_id}/assign")
+def assign_incident(incident_id: int, assignment: IncidentAssign):
+    # 1. Validate department is provided and non-empty
+    cleaned_dept = assignment.department.strip()
+    if not cleaned_dept:
+        raise HTTPException(
+            status_code=400,
+            detail="Department cannot be empty"
+        )
+
+    # 2. Verify whether the incident exists
+    try:
+        incident_check = (
+            supabase
+            .table("incidents")
+            .select("id")
+            .eq("id", incident_id)
+            .execute()
+        )
+        if not incident_check.data:
+            raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking incident: {str(e)}")
+
+    # 3. Update department and automatically set status = ASSIGNED
+    try:
+        response = (
+            supabase
+            .table("incidents")
+            .update({
+                "department": cleaned_dept,
+                "status": "ASSIGNED"
+            })
+            .eq("id", incident_id)
+            .execute()
+        )
+        if not response.data:
+            raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+        return response.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to assign incident: {str(e)}")
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
